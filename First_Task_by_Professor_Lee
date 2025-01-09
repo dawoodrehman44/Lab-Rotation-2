@@ -1,0 +1,227 @@
+https://chatgpt.com/share/677f9a37-f968-8000-98d0-a215402580f9
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision.models import resnet50
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from diffusers import UNet2DModel, DDPMScheduler
+
+# Define the Diffusion Model with Demographic Conditioning
+class DiffusionUNetModel(nn.Module):
+    def __init__(self, num_channels=3, image_size=256, demographic_dim=2, label_dim=14):
+        super(DiffusionUNetModel, self).__init__()
+        self.unet = UNet2DModel(
+            sample_size=image_size,  # Image size
+            in_channels=num_channels,  # Number of input channels
+            out_channels=num_channels,  # Number of output channels
+            layers_per_block=2,
+            block_out_channels=(64, 128, 256, 512),
+            down_block_types=(
+                "DownBlock2D", "DownBlock2D", "DownBlock2D", "AttnDownBlock2D"
+            ),
+            up_block_types=(
+                "AttnUpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"
+            ),
+        )
+        self.demographic_fc = nn.Linear(demographic_dim, 128)
+        self.label_fc = nn.Linear(label_dim, 128)
+        self.combine_fc = nn.Linear(256, 128)
+
+    def forward(self, x, demographic_data, labels):
+        demo_features = self.demographic_fc(demographic_data)
+        label_features = self.label_fc(labels)
+        combined_features = torch.cat((demo_features, label_features), dim=-1)
+        combined_features = self.combine_fc(combined_features)
+        combined_features = combined_features.view(-1, 128, 1, 1)
+        combined_features = combined_features.expand(-1, 128, x.size(2), x.size(3))
+        x = torch.cat((x, combined_features), dim=1)
+        return self.unet(x).sample
+
+# Model Initialization
+demographic_dim = 2  # e.g., age and gender
+label_dim = 14       # Disease labels
+diffusion_model = DiffusionUNetModel(demographic_dim=demographic_dim, label_dim=label_dim)
+diffusion_scheduler = DDPMScheduler(num_train_timesteps=1000)
+
+# Training Loop
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+diffusion_model.to(device)
+optimizer = optim.Adam(diffusion_model.parameters(), lr=1e-4)
+criterion = nn.MSELoss()
+
+epochs = 10
+for epoch in range(epochs):
+    diffusion_model.train()
+    running_loss = 0.0
+    for images, labels in train_loader:
+        # Prepare data
+        images = images.to(device)
+        labels = labels.to(device)
+        demographic_data = labels[:, :2]  # Assuming first two labels are age and gender
+        
+        noise = torch.randn_like(images).to(device)
+        timesteps = torch.randint(0, diffusion_scheduler.num_train_timesteps, (images.size(0),), device=device).long()
+
+        # Generate noisy images
+        noisy_images = diffusion_scheduler.add_noise(images, noise, timesteps)
+
+        # Forward pass
+        optimizer.zero_grad()
+        outputs = diffusion_model(noisy_images, demographic_data, labels)
+
+        # Compute loss
+        loss = criterion(outputs, noise)
+        loss.backward()
+        optimizer.step()
+        
+        running_loss += loss.item()
+
+    print(f"Epoch {epoch + 1}, Loss: {running_loss / len(train_loader)}")
+
+# Grad-CAM Visualization
+target_layer = diffusion_model.unet.down_blocks[-1]
+cam = GradCAM(model=diffusion_model.unet, target_layers=[target_layer], use_cuda=torch.cuda.is_available())
+
+for images, labels in valid_loader:
+    images = images.to(device)
+    demographic_data = labels[:, :2]  # Age and gender
+
+    # Grad-CAM
+    grayscale_cam = cam(input_tensor=images)
+    heatmap = show_cam_on_image(images[0].cpu().numpy().transpose(1, 2, 0), grayscale_cam[0], use_rgb=True)
+    
+    plt.imshow(heatmap)
+    plt.title("Grad-CAM Visualization")
+    plt.axis("off")
+    plt.show()
+    break
+
+
+import os
+import time
+import matplotlib.pyplot as plt
+
+# Define the output directory
+output_dir = "/path/to/output_directory"
+os.makedirs(output_dir, exist_ok=True)
+
+# Initialize tracking variables for plots
+training_losses = []
+epoch_times = []
+checkpoints = []
+checkpoint_losses = []
+
+# Resume from checkpoint
+resume_epoch = 0
+if resume_epoch > 0:
+    checkpoint = torch.load(os.path.join(output_dir, f"model_checkpoint_epoch_{resume_epoch}.pt"))
+    diffusion_model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    training_losses = checkpoint["training_losses"]
+    epoch_times = checkpoint["epoch_times"]
+    checkpoint_losses = checkpoint["checkpoint_losses"]
+
+# Training Loop
+save_every = 5  # Save checkpoint every N epochs
+
+for epoch in range(resume_epoch, epochs):
+    diffusion_model.train()
+    running_loss = 0.0
+    start_time = time.time()
+
+    for images, labels in train_loader:
+        # Original Training Logic
+        images = images.to(device)
+        labels = labels.to(device)
+        demographic_data = labels[:, :2]  # Assuming first two labels are age and gender
+
+        noise = torch.randn_like(images).to(device)
+        timesteps = torch.randint(0, diffusion_scheduler.num_train_timesteps, (images.size(0),), device=device).long()
+
+        noisy_images = diffusion_scheduler.add_noise(images, noise, timesteps)
+
+        optimizer.zero_grad()
+        outputs = diffusion_model(noisy_images, demographic_data, labels)
+        loss = criterion(outputs, noise)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+
+    epoch_time = time.time() - start_time
+    epoch_loss = running_loss / len(train_loader)
+    training_losses.append(epoch_loss)
+    epoch_times.append(epoch_time)
+
+    # Save X-ray Image After Each Epoch
+    with torch.no_grad():
+        sample_timesteps = torch.tensor([0]).to(device)
+        generated_image = diffusion_scheduler.add_noise(images[0:1], outputs[0:1], sample_timesteps)
+        plt.imshow(generated_image[0].cpu().permute(1, 2, 0).numpy(), cmap="gray")
+        plt.title(f"Generated X-ray Image - Epoch {epoch + 1}")
+        plt.axis("off")
+        plt.savefig(os.path.join(output_dir, f"generated_image_epoch_{epoch + 1}.png"))
+        plt.close()
+
+    print(f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}, Time: {epoch_time:.2f}s")
+
+    # Save Checkpoints
+    if (epoch + 1) % save_every == 0 or epoch == epochs - 1:
+        checkpoint_losses.append(epoch_loss)
+        checkpoints.append(epoch + 1)
+        torch.save({
+            "model_state_dict": diffusion_model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "training_losses": training_losses,
+            "epoch_times": epoch_times,
+            "checkpoint_losses": checkpoint_losses,
+        }, os.path.join(output_dir, f"model_checkpoint_epoch_{epoch + 1}.pt"))
+
+# Plot Loss vs. Epoch
+plt.figure()
+plt.plot(range(1, len(training_losses) + 1), training_losses, label="Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Loss vs. Epoch")
+plt.legend()
+plt.savefig(os.path.join(output_dir, "loss_vs_epoch.png"))
+plt.close()
+
+# Plot Training Time vs. Epoch
+plt.figure()
+plt.plot(range(1, len(epoch_times) + 1), epoch_times, label="Training Time (s)")
+plt.xlabel("Epoch")
+plt.ylabel("Time (s)")
+plt.title("Training Time vs. Epoch")
+plt.legend()
+plt.savefig(os.path.join(output_dir, "time_vs_epoch.png"))
+plt.close()
+
+# Plot Loss vs. Checkpoint
+plt.figure()
+plt.plot(checkpoints, checkpoint_losses, label="Checkpoint Loss")
+plt.xlabel("Checkpoint (Epoch)")
+plt.ylabel("Loss")
+plt.title("Loss vs. Checkpoint")
+plt.legend()
+plt.savefig(os.path.join(output_dir, "loss_vs_checkpoint.png"))
+plt.close()
+
+print(f"Training completed. Results saved in {output_dir}")
+
+# Grad-CAM Visualization
+for images, labels in valid_loader:
+    images = images.to(device)
+    demographic_data = labels[:, :2]  # Age and gender
+
+    # Grad-CAM
+    grayscale_cam = cam(input_tensor=images)
+    heatmap = show_cam_on_image(images[0].cpu().numpy().transpose(1, 2, 0), grayscale_cam[0], use_rgb=True)
+    
+    plt.imshow(heatmap)
+    plt.title("Grad-CAM Visualization")
+    plt.axis("off")
+    plt.show()
+    break
