@@ -1,11 +1,11 @@
 https://chatgpt.com/share/677f9a37-f968-8000-98d0-a215402580f9
 
+
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision.models import resnet50
-from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.image import show_cam_on_image
 from diffusers import UNet2DModel, DDPMScheduler
 
 # Define the Diffusion Model with Demographic Conditioning
@@ -51,7 +51,7 @@ diffusion_model.to(device)
 optimizer = optim.Adam(diffusion_model.parameters(), lr=1e-4)
 criterion = nn.MSELoss()
 
-epochs = 10
+epochs = 1
 for epoch in range(epochs):
     diffusion_model.train()
     running_loss = 0.0
@@ -104,7 +104,7 @@ import time
 import matplotlib.pyplot as plt
 
 # Define the output directory
-output_dir = "/path/to/output_directory"
+output_dir = "/mnt/backup1/Dawood's Data/CheXpert Dataset/Lab_Rotation_2/First_task_Visualizing_effects"
 os.makedirs(output_dir, exist_ok=True)
 
 # Initialize tracking variables for plots
@@ -124,7 +124,7 @@ if resume_epoch > 0:
     checkpoint_losses = checkpoint["checkpoint_losses"]
 
 # Training Loop
-save_every = 5  # Save checkpoint every N epochs
+save_every = 1  # Save checkpoint every N epochs
 
 for epoch in range(resume_epoch, epochs):
     diffusion_model.train()
